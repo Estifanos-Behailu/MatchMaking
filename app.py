@@ -1,12 +1,10 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
-from flask_mail import Mail,Message
-from flask import jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask_mail import Mail, Message
 from scipy.spatial.distance import cosine
 import tensorflow_hub as hub
 import json
 import psycopg2
-
-
+import os
 
 # Flask app configuration
 app = Flask(__name__)
@@ -25,21 +23,21 @@ def get_db_connection():
     try:
         conn = psycopg2.connect(
             host='ep-polished-wave-a50wwuzy.us-east-2.aws.neon.tech',
-            database='match',  # Ensure the database name matches yours
-            user='match_owner',  # Ensure the username matches yours
-            password='2bpa6gWifLxM',  # Ensure the password matches yours
-            port='5432'  # Ensure the port is correct
+            database='match',
+            user='match_owner',
+            password='2bpa6gWifLxM',
+            port='5432'
         )
         return conn
     except Exception as e:
         print(f"An error occurred while connecting to the database: {e}")
-        return None  # Return None if the connection fails
+        return None
 
 # Utility function to fetch a user by their email
 def get_user_by_email(email):
     conn = get_db_connection()
     if conn is None:
-        return None  # Return None if the connection fails
+        return None
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM user_resumes WHERE user_email = %s', (email,))
     user = cursor.fetchone()
@@ -98,7 +96,6 @@ def register():
         experience_start_date = request.form.get('experience_start_date', '').strip()
         experience_end_date = request.form.get('experience_end_date', '').strip()
 
-        # Check for valid experience inputs
         if not all([experience_job_title, experience_company, experience_start_date, experience_end_date]):
             flash('Please fill out all experience fields.', 'danger')
             return redirect(url_for('register'))
@@ -115,7 +112,6 @@ def register():
         education_institution = request.form.get('education_institution', '').strip()
         education_year = request.form.get('education_year', '').strip()
 
-        # Check for valid education inputs
         if not all([education_degree, education_institution, education_year]):
             flash('Please fill out all education fields.', 'danger')
             return redirect(url_for('register'))
@@ -130,7 +126,6 @@ def register():
         primary_language = request.form.get('primary_language', '').strip()
         language_level = request.form.get('language_level', '').strip()
 
-        # Check for valid language inputs
         if not primary_language or not language_level:
             flash('Please select both a primary language and its proficiency level.', 'danger')
             return redirect(url_for('register'))
@@ -160,7 +155,7 @@ def register():
             """, (user_name, user_email, job_title, skills_json, experience_json, education_json, languages_json))
             conn.commit()
         except Exception as e:
-            conn.rollback()  # Rollback if there is an error
+            conn.rollback()
             flash(f'Error saving to database: {str(e)}', 'danger')
             return redirect(url_for('register'))
         finally:
@@ -171,7 +166,6 @@ def register():
         return redirect(url_for('profile', email=user_email))
 
     return render_template('register.html')
-
 
 # Profile page route
 @app.route('/profile')
@@ -192,7 +186,7 @@ def profile():
 @app.route('/match')
 def match_users():
     email = request.args.get('email')
-    email_status = request.args.get('email_status')  # Get the email status message
+    email_status = request.args.get('email_status')
     if not email:
         flash('Please provide your email to find matches.', 'danger')
         return redirect(url_for('home'))
@@ -226,14 +220,12 @@ def match_users():
             'languages': user[7]
         }
         match_score = calculate_match_with_use(current_user, other_user)
-        if match_score > 0.7:  # Only consider matches above 0.7
+        if match_score > 0.7:
             matches.append((other_user, match_score))
 
     matches.sort(key=lambda x: x[1], reverse=True)
 
-    return render_template('matches.html', matches=matches, user=current_user,email_status=email_status)
-
-
+    return render_template('matches.html', matches=matches, user=current_user, email_status=email_status)
 
 # Collaboration request route
 @app.route('/send_collaboration_request', methods=['POST'])
@@ -255,7 +247,7 @@ def send_collaboration_request():
         mail.send(message)
         return jsonify({'status': 'success', 'message': f'Collaboration request sent to {match_email}!'})
     except Exception as e:
-        return jsonify({'status': 'error', 'message': f'Error sending collaboration request'})
+        return jsonify({'status': 'error', 'message': f'Error sending collaboration request: {str(e)}'})
 
 # Home route
 @app.route('/')
@@ -264,4 +256,5 @@ def home():
 
 # Run the application
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5000))  # Use environment variable for port
+    app.run(host='0.0.0.0', port=port, debug=False)  # Set debug=False for production
