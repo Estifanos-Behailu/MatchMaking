@@ -1,0 +1,246 @@
+import psycopg2
+from flask import Flask, render_template, request, redirect, url_for, flash
+import tensorflow_hub as hub
+from scipy.spatial.distance import cosine
+import json
+
+# Flask app configuration
+app = Flask(__name__)
+app.secret_key = 'your_secret_key_here'  # Set your secret key
+
+# Database connection function
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(
+            host='ep-polished-wave-a50wwuzy.us-east-2.aws.neon.tech',
+            database='match',  # Ensure the database name matches yours
+            user='match_owner',  # Ensure the username matches yours
+            password='2bpa6gWifLxM',  # Ensure the password matches yours
+            port='5432'  # Ensure the port is correct
+        )
+        return conn
+    except Exception as e:
+        print(f"An error occurred while connecting to the database: {e}")
+        return None  # Return None if the connection fails
+
+# Utility function to fetch a user by their email
+def get_user_by_email(email):
+    conn = get_db_connection()
+    if conn is None:
+        return None  # Return None if the connection fails
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM user_resumes WHERE user_email = %s', (email,))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if user is None:
+        return None
+
+    return {
+        'id': user[0],
+        'user_name': user[1],
+        'user_email': user[2],
+        'job_title': user[3],
+        'skills': user[4],
+        'experience': user[5],
+        'education': user[6],
+        'languages': user[7]
+    }
+
+# Load Universal Sentence Encoder model
+model = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
+
+# Utility function to calculate similarity
+def use_similarity(text_a, text_b):
+    embedding_a = model([text_a])[0].numpy()
+    embedding_b = model([text_b])[0].numpy()
+    similarity_score = 1 - cosine(embedding_a, embedding_b)
+    return similarity_score
+
+# Calculate match score between two users
+def calculate_match_with_use(user_a, user_b):
+    skill_score = use_similarity(json.dumps(user_a['skills']), json.dumps(user_b['skills']))
+    experience_score = use_similarity(json.dumps(user_a['experience']), json.dumps(user_b['experience']))
+    education_score = use_similarity(json.dumps(user_a['education']), json.dumps(user_b['education']))
+    languages_score = use_similarity(json.dumps(user_a['languages']), json.dumps(user_b['languages']))
+
+    match_score = (skill_score * 0.4) + (experience_score * 0.3) + (education_score * 0.2) + (languages_score * 0.1)
+    return match_score
+
+# Registration route
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        user_name = request.form['user_name']
+        user_email = request.form['user_email']
+        job_title = request.form['job_title']
+        
+        # Process skills input (comma-separated string)
+        skills = request.form['skills'].split(',')
+        skills = [skill.strip() for skill in skills if skill.strip()]  # Remove empty entries and trim spaces
+
+        # Process experience input
+        experience_job_title = request.form.get('experience_job_title', '').strip()
+        experience_company = request.form.get('experience_company', '').strip()
+        experience_start_date = request.form.get('experience_start_date', '').strip()
+        experience_end_date = request.form.get('experience_end_date', '').strip()
+
+        # Check for valid experience inputs
+        if not all([experience_job_title, experience_company, experience_start_date, experience_end_date]):
+            flash('Please fill out all experience fields.', 'danger')
+            return redirect(url_for('register'))
+
+        experience = [{
+            "job_title": experience_job_title,
+            "company": experience_company,
+            "start_date": experience_start_date,
+            "end_date": experience_end_date
+        }]
+
+        # Process education input
+        education_degree = request.form.get('education_degree', '').strip()
+        education_institution = request.form.get('education_institution', '').strip()
+        education_year = request.form.get('education_year', '').strip()
+
+        # Check for valid education inputs
+        if not all([education_degree, education_institution, education_year]):
+            flash('Please fill out all education fields.', 'danger')
+            return redirect(url_for('register'))
+
+        education = [{
+            "degree": education_degree,
+            "institution": education_institution,
+            "graduation_year": education_year
+        }]
+
+        # Process language inputs
+        primary_language = request.form.get('primary_language', '').strip()
+        language_level = request.form.get('language_level', '').strip()
+
+        # Check for valid language inputs
+        if not primary_language or not language_level:
+            flash('Please select both a primary language and its proficiency level.', 'danger')
+            return redirect(url_for('register'))
+
+        languages = [{"name": primary_language, "level": language_level}]
+
+        # Convert lists and dictionaries to JSON
+        try:
+            skills_json = json.dumps(skills)
+            experience_json = json.dumps(experience)
+            education_json = json.dumps(education)
+            languages_json = json.dumps(languages)
+        except Exception as e:
+            flash(f'Error processing data: {str(e)}', 'danger')
+            return redirect(url_for('register'))
+
+        conn = get_db_connection()
+        if conn is None:
+            flash('Database connection failed. Please try again later.', 'danger')
+            return redirect(url_for('home'))
+
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO user_resumes (user_name, user_email, job_title, skills, experience, education, languages)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (user_name, user_email, job_title, skills_json, experience_json, education_json, languages_json))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()  # Rollback if there is an error
+            flash(f'Error saving to database: {str(e)}', 'danger')
+            return redirect(url_for('register'))
+        finally:
+            cur.close()
+            conn.close()
+
+        flash('Registration successful!', 'success')
+        return redirect(url_for('profile', email=user_email))
+
+    return render_template('register.html')
+
+
+# Profile page route
+@app.route('/profile')
+def profile():
+    email = request.args.get('email')
+    if not email:
+        flash('Please provide an email to view your profile.', 'danger')
+        return redirect(url_for('home'))
+
+    user = get_user_by_email(email)
+    if user is None:
+        flash('User not found. Please register.', 'danger')
+        return redirect(url_for('register'))
+
+    return render_template('profile.html', user=user)
+
+# Matching users route
+@app.route('/match')
+def match_users():
+    email = request.args.get('email')
+    if not email:
+        flash('Please provide your email to find matches.', 'danger')
+        return redirect(url_for('home'))
+
+    current_user = get_user_by_email(email)
+    if not current_user:
+        flash('User not found. Please register.', 'danger')
+        return redirect(url_for('register'))
+
+    conn = get_db_connection()
+    if conn is None:
+        flash('Database connection failed. Please try again later.', 'danger')
+        return redirect(url_for('home'))
+
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM user_resumes WHERE user_email != %s", (email,))
+    other_users = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    matches = []
+    for user in other_users:
+        other_user = {
+            'id': user[0],
+            'user_name': user[1],
+            'user_email': user[2],
+            'job_title': user[3],
+            'skills': user[4],
+            'experience': user[5],
+            'education': user[6],
+            'languages': user[7]
+        }
+        match_score = calculate_match_with_use(current_user, other_user)
+        if match_score > 0.7:  # Only consider matches above 0.7
+            matches.append((other_user, match_score))
+
+    matches.sort(key=lambda x: x[1], reverse=True)
+
+    return render_template('matches.html', matches=matches, user=current_user)
+
+# Collaboration request route
+@app.route('/send_collaboration_request', methods=['POST'])
+def send_collaboration_request():
+    match_email = request.form.get('match_email')
+    sender_email = request.form.get('sender_email')
+
+    if not match_email or not sender_email:
+        flash('Invalid request. Please try again.', 'danger')
+        return redirect(url_for('home'))
+
+    # Here, you can add logic to handle the collaboration request,
+    # such as sending an email or saving it to the database.
+
+    flash(f'Collaboration request sent to {match_email}!', 'success')
+    return redirect(url_for('match_users', email=sender_email))
+
+# Home route
+@app.route('/')
+def home():
+    return render_template('home.html')
+
+# Run the application
+if __name__ == '__main__':
+    app.run(debug=True)
