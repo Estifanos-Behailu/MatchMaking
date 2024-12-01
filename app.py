@@ -59,14 +59,24 @@ def get_user_by_email(email):
     }
 
 # Load Universal Sentence Encoder model
-model = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
+try:
+    model = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    model = None
 
-# Utility function to calculate similarity
+# Modify the similarity function to handle potential connection issues
 def use_similarity(text_a, text_b):
-    embedding_a = model([text_a])[0].numpy()
-    embedding_b = model([text_b])[0].numpy()
-    similarity_score = 1 - cosine(embedding_a, embedding_b)
-    return similarity_score
+    if model is None:
+        return 0.5  # Return a default middle score if model failed to load
+    try:
+        embedding_a = model([text_a])[0].numpy()
+        embedding_b = model([text_b])[0].numpy()
+        similarity_score = 1 - cosine(embedding_a, embedding_b)
+        return similarity_score
+    except Exception as e:
+        print(f"Error calculating similarity: {e}")
+        return 0.5  # Return middle score in case of errors
 
 # Calculate match score between two users
 def calculate_match_with_use(user_a, user_b):
